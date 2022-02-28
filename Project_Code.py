@@ -1,5 +1,5 @@
 from moviepy.editor import VideoFileClip
-from frame_class_file_v2 import frame_class
+from useful_functions import frame_class
 
 ## test output video
 frm = frame_class()
