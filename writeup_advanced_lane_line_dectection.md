@@ -87,7 +87,7 @@ The source Region on the original image and the destination region on the warped
 
 The image pre-processing is implemented as a method **img_PrePrc( )** of the class **frame_class**. 
 
-###4.1 Adjust exposure and contrast of image
+### 4.1 Adjust exposure and contrast of image
 In this method the exposure and contrast of the original image will firstly be adjusted, so that the lane lines are clearly apart from the other areas in the image. 
 #### 4.1.1 Adjust exposure
 To adjusting the exposure the image will be firstly transformed into gray. Then the value of every pixel will be counted and arranged from 0 to 255. The median of the arranged pixel values will then be computed. With assuming that the desired median value is 128, the pixels with its value smaller as 128 will be multiplied with a factor, and the pixels with its value bigger than 128 will be multiplied by different factor, which is in responding to the distance to 255. The goal is, the median to 128 to move.
