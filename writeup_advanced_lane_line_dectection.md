@@ -123,7 +123,7 @@ After getting a image with adjusted exposure, the contrast of this image should 
 
  **Example of Photoshop Curve**
 
-Firstly is to consider how to adjust the curve. In this project the curve is used to improve the contrast of highlight zone for detecting white lane lines. As the white lane lines normally have hight value in all three channels, by increasing the slope of curve from 160 can increase the contrast of white lane lines to their surrounding areas. 
+Firstly is to consider how to adjust the curve. In this project the curve is used to improve the contrast of highlight zone for detecting white lane lines. As the white lane lines normally have high value in all three channels, by increasing the slope of curve from 160 can increase the contrast of white lane lines to their surrounding areas. 
 
 ![Alt text](./output_images/curve_adjusting_for_white_lane_line.png)
 
@@ -154,8 +154,63 @@ class frame_class(object):  # class, which is to processing every frame
 
 ![Alt Text](./output_images/result_curve_adjusting.png)
 
-* After that the bright zone of this image will be selected to avoiding the "black lines" and the lines between dark and bright areas. 
-* As the lane lines are yellow or white, these two colors will be selected using color space transformation and thresholding.
+### 4.2 Selecting the bright zone
+
+After improving the exposure and contrast of the image, we have to consider how to avoid detecting the lines between dark and bright zones as lane lines. The image below shows this situation.
+
+![Alt Text](./output_images/Example_Why_Selecting_Bright_zone.png)
+
+The idea to avoid this problem is to firstly selecting the **dark** area. Transforming the data type from logical to 0 and 255 and then applying the GaussianBlur-Function to the selected area, so that the areas, which are bigger than 0, are extended. Now if we made a threshold saying that the pixels between (150,255) belong the selected area before GaussianBlur, than we have by this way extended the dark zone. The problematic lines between dark and bright zones are than filtered.
+
+![Alt Text](./output_images/Shrinking_Bright_zone.png)
+
+```python
+class frame_class(object):
+    ...
+    def img_PrePrc(self):
+        ...
+        self.bright_zone = (self.color_thresh(self.original_undst_img[:, :, 0], (120, 255))) & (self.color_thresh(self.original_undst_img[:, :, 1], (120, 255))) # select the bright area in the image. Black lines will be filtered
+        # shrinking of bright zone to avoid detecting the line, which divides shallow and bright, as lane line
+        self.bright_zone_be = 255 * np.int8(np.invert(self.bright_zone))  # inverse bright and shallow
+        self.bright_zone_be = cv2.GaussianBlur(self.bright_zone_be, (9, 9), 0) # the bright area (value > 0) which represents the shallow area in the original image, will be extended
+        self.bright_zone_be = self.color_thresh(self.bright_zone_be, thresh=(150, 255), mode=1)  # select how much will the bright area be shrinked
+        self.bright_zone_be = np.invert(self.bright_zone_be)
+        ...
+```
+
+### 4.3 Detecting the lane lines depending on color
+
+As the lane lines are yellow or white, these two colors will be selected using color space transformation and thresholding.
+
+The yellow lane lines always have high saturation. To detecting the yellow lane lines, the adjusted image should be firstly turned into HSV-Space. The S-Channel describes the saturation information. Then applying a color-thresholding to the S-Channel. The yellow lane lines are basically detected. (additional conditions in section 4.4)
+
+![Alt Text](./output_images/yellow_lane_line.png)
+
+```python
+class frame_class(object):
+    ...
+    def img_PrePrc(self):
+        ...
+        self.hsv = cv2.cvtColor(self.cor_dist(self.image), cv2.COLOR_RGB2HSV) # turn the color space into HSV
+        self.hsv_s = self.hsv[:, :, 1] # select the S-channel
+        self.hsv_s_thresh_y = self.color_thresh(self.hsv_s, thresh=(50, 255), mode=1) # select the yellow lane lines. For yellow lane lines usually have high saturation.
+        ...
+```
+
+As the white lane lines always have high value of all three RGB-Channels, I used the color thresh to select the pixels with high value (>190) in all three channels to detecting the white lane lines.
+
+![Alt Text](./output_images/white_lane_line.png)
+
+```python
+class frame_class(object):
+    ...
+    def img_PrePrc(self):
+        ...
+        self.rgb_w = (self.undst_img > [[[190,190,190]]]).all(2) # selecting the white lane lines, for they usually have high values in all three channels
+        ...
+```
+
+
 * To avoid that some areas, which are in white or yellow but not lane lines, are selected due to the color selection, a gradient threshold has been used together with the yellow and white selection. This, on the other hand, avoids also some areas with high gradient but not yellow or white are selected due gradient thresholding.
 * The threshold image is then warped to the bird-eye view.
 * For finding the lane bases the histogram is used.
