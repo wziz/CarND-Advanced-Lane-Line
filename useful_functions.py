@@ -45,13 +45,14 @@ class frame_class(object):  # class, which is to processing every frame
         self.xm_per_pix = 3.7 / (944 - 363 + 1)
         self.frame_drop = False
         self.save = []
-        # define the curve for adjusting a color-image (used in method: self.ps_curve_proc())
+        # define the curve for fine-tuning the contrast of a color-image (used in method: self.ps_curve_proc())
         self.points = np.array([0, 20, 55, 90, 160, 200, 230, 255])
-        self.values = np.array([0, 10, 50, 90, 160, 220, 250, 255])
+        self.values = np.array([0, 20, 55, 90, 160, 245, 250, 255])
         self.cs = CubicSpline(self.points, self.values)
-        # define the curve for adjusting a gray-image (used in method: self.ps_curve_proc())
+        # define the curve for fine-tuning the contrast of a gray-image (used in method: self.ps_curve_proc())
         self.points_gray = np.array([0,40,255])
         self.values_gray = np.array([0, 0, 255])
+        self.values_gray = np.array([0, 40, 255])
         self.cs_gray = CubicSpline(self.points_gray, self.values_gray)
         self.method = ''
     #  useful functions
@@ -113,14 +114,21 @@ class frame_class(object):  # class, which is to processing every frame
         select_region = ((image >= thresh[0]) & (image <= thresh[1]))
         output = self.output_mode(select_region, mode)
         return output
-    def cor_dist(self, image, mtx=mtx_calc, dist=dist_calc): # distortion Correction
+    def cor_dist(self, image, mtx=mtx_calc, dist=dist_calc):  # distortion Correction
         undst = cv2.undistort(image, mtx, dist, None, mtx)
         return undst
-    def getZValueFromTabel(self, input_x, tiFil_tabel): # get the value from lookup tabel. In this project it is used to get the filter constant in reponding to difference of two frames for a stable lane line detection
+    def getZValueFromTabel_old(self, input_x, tiFil_tabel): # get the value from lookup tabel. In this project it is used to get the filter constant in reponding to difference of two frames for a stable lane line detection
         i = 0
         while input_x > tiFil_tabel[0][i] and i < len(tiFil_tabel[0]) - 1:
             i += 1
         return tiFil_tabel[1][i]
+    def getZValueFromTabel(self, input_x, tiFil_tabel): # _vectorized
+        i = 0
+        output_ti = np.ones_like(input_x) * tiFil_tabel[1][0]  # all outputs are initiallized with the first value in the tabel
+        while i < len(tiFil_tabel[0]) - 1:
+            output_ti[input_x > tiFil_tabel[0][i]] = tiFil_tabel[1][i + 1]
+            i += 1
+        return output_ti
     def contrast_adj(self, image, contrast): # to adjust the contrast of a image for better lane line detection
         buf = image.copy()
         f = 131 * (contrast + 127) / (127 * (131 - contrast))
@@ -167,8 +175,8 @@ class frame_class(object):  # class, which is to processing every frame
     def img_PrePrc(self): # image processing, highlight the lane line pixels and outputs the warped image
         self.original_undst_img = self.cor_dist(self.image) # original image distortion correction
         self.exposure_adjusted = self.exposure_adj(self.image) # adjust the exposure
-        self.gamma_adjusted = self.ps_curve_proc(self.exposure_adjusted) # adjust the shallow and brightness of the image
-        self.undst_img = self.cor_dist(self.gamma_adjusted)# adjusted image distortion correction
+        self.curve_adjusted = self.ps_curve_proc(self.exposure_adjusted) # adjust the shallow and brightness of the image
+        self.undst_img = self.cor_dist(self.curve_adjusted)# adjusted image distortion correction
 
         self.bright_zone = (self.color_thresh(self.original_undst_img[:, :, 0], (120, 255))) & (self.color_thresh(self.original_undst_img[:, :, 1], (120, 255))) # select the bright area in the image. Black lines will be filtered
 
@@ -182,8 +190,8 @@ class frame_class(object):  # class, which is to processing every frame
         self.hsv_s = self.hsv[:, :, 1] # select the S-channel
         self.hsv_s_thresh_y = self.color_thresh(self.hsv_s, thresh=(50, 255), mode=1) # select the yellow lane lines. For yellow lane lines usually have high saturation.
 
-        gray_img = cv2.cvtColor(self.image, cv2.COLOR_RGB2GRAY) # turn the image into gray
-        self.gray_img = self.ps_curve_proc(gray_img, mode='gray') # adjust the shallow and brightness areas of the image to filtering the extrem dark area (value < 40) and increasing the contrast
+        self.gray_img = cv2.cvtColor(self.image, cv2.COLOR_RGB2GRAY) # turn the image into gray
+        # self.gray_img = self.ps_curve_proc(gray_img, mode='gray') # adjust the shallow and brightness areas of the image to filtering the extrem dark area (value < 40) and increasing the contrast
 
         self.grd = self.abs_sobel_thresh(self.gray_img, orient='x', thresh=(10,80)) # detecting the margin of lane lines
 
@@ -261,7 +269,7 @@ class frame_class(object):  # class, which is to processing every frame
     def draw_poly_eq(self, fac, x): # draw a second order polynom by given factors and x position
         y = fac[0] * x ** 2 + fac[1] * x + fac[2]
         return y
-    def fit_poly(self): # finding lane pixels from lane bases
+    def sliding_window_poly(self): # finding lane pixels from lane bases
         self.find_lane_pixel()
         if self.lefty.shape[0] < 3 or self.righty.shape[0] < 3: # if the detected lane pixel less than three, then drop this frame from detecting lane lines.
             self.frame_drop = True
@@ -282,8 +290,13 @@ class frame_class(object):  # class, which is to processing every frame
                 pass
             else:
                 self.lane_line_filter()  # use this function for smooth detection of lane lines
-                self.left_fit = np.polyfit(self.lefty, self.leftx, 2)  # fitting second order polynom after filtering of the lane line
-                self.right_fit = np.polyfit(self.righty, self.rightx, 2)
+                # self.left_fit = np.polyfit(self.lefty, self.leftx, 2)  # fitting second order polynom after filtering of the lane line
+                # self.right_fit = np.polyfit(self.righty, self.rightx, 2)
+                self.left_fit = np.polyfit(self.ploty, self.left_fitx, 2)  # fitting second order polynom after filtering of the lane line
+                self.right_fit = np.polyfit(self.ploty, self.right_fitx, 2)
+                self.ploty = np.linspace(0, self.warped_compute.shape[0] - 1, self.warped_compute.shape[0])
+                self.left_fitx = self.left_fit[0] * self.ploty ** 2 + self.left_fit[1] * self.ploty + self.left_fit[2]
+                self.right_fitx = self.right_fit[0] * self.ploty ** 2 + self.right_fit[1] * self.ploty + self.right_fit[2]
 
                 # for debug
                 self.output_img = np.dstack((self.warped_compute, self.warped_compute, self.warped_compute))
@@ -307,7 +320,7 @@ class frame_class(object):  # class, which is to processing every frame
         right_lane_idx = ((nonzerox > self.right_region_l) & (nonzerox < self.right_region_r)).nonzero()[0]
 
         if (left_lane_idx is None) or (right_lane_idx is None):  # if nothing found
-            self.fit_poly()  # then back to the method, that search the lane line from lane base
+            self.sliding_window_poly()  # then back to the method, that search the lane line from lane base
         else:
             self.frame_drop = False
             self.leftx = nonzerox[left_lane_idx]
@@ -329,8 +342,13 @@ class frame_class(object):  # class, which is to processing every frame
             else:
 
                 self.lane_line_filter()  # use this function for smooth detection of lane lines
-                self.left_fit = np.polyfit(self.lefty, self.leftx, 2)  # fitting second order polynom after filtering of the lane line
-                self.right_fit = np.polyfit(self.righty, self.rightx, 2)
+                # self.left_fit = np.polyfit(self.lefty, self.leftx, 2)  # fitting second order polynom after filtering of the lane line
+                # self.right_fit = np.polyfit(self.righty, self.rightx, 2)
+                self.left_fit = np.polyfit(self.ploty, self.left_fitx, 2)  # fitting second order polynom after filtering of the lane line
+                self.right_fit = np.polyfit(self.ploty, self.right_fitx, 2)
+                self.ploty = np.linspace(0, self.warped_compute.shape[0] - 1, self.warped_compute.shape[0])
+                self.left_fitx = self.left_fit[0] * self.ploty ** 2 + self.left_fit[1] * self.ploty + self.left_fit[2]
+                self.right_fitx = self.right_fit[0] * self.ploty ** 2 + self.right_fit[1] * self.ploty + self.right_fit[2]
 
                 # for debug
                 self.output_img = np.dstack((self.warped_compute, self.warped_compute, self.warped_compute))
@@ -364,12 +382,14 @@ class frame_class(object):  # class, which is to processing every frame
             self.right_fitx_mem = self.right_fitx.copy()
         else:
             delta_left = np.abs(self.left_fitx_mem - self.left_fitx)  # compute the difference between two frames of each normalized lane points
-            delta_left_max = delta_left.max()
-            tiFil_left = self.getZValueFromTabel(delta_left_max, tiFil_t) # using the biggest difference to get the time constant
+            # delta_left_max = delta_left.max()
+            # tiFil_left = self.getZValueFromTabel(delta_left_max, tiFil_t) # using the biggest difference to get the time constant
+            tiFil_left = self.getZValueFromTabel(delta_left, tiFil_t)  # using the biggest difference to get the time constant
 
             delta_right = np.abs(self.right_fitx_mem - self.right_fitx)
-            delta_right_max = delta_right.max()
-            tiFil_right = self.getZValueFromTabel(delta_right_max, tiFil_t)
+            # delta_right_max = delta_right.max()
+            # tiFil_right = self.getZValueFromTabel(delta_right_max, tiFil_t)
+            tiFil_right = self.getZValueFromTabel(delta_right, tiFil_t)
 
             self.left_fitx_mem = self.left_fitx_mem + 0.02 / tiFil_left * (self.left_fitx - self.left_fitx_mem) # compute the x-position of filtered lane points
             self.right_fitx_mem = self.right_fitx_mem + 0.02 / tiFil_right * (self.right_fitx - self.right_fitx_mem)
@@ -383,7 +403,7 @@ class frame_class(object):  # class, which is to processing every frame
         try:
             self.img_PrePrc()  # image pre-processing to get the warped lane line pixels and lane line base
             if ((self.left_fit is None) and (self.right_fit is None)) or (self.counter == 1 or (np.var(self.lane_width) > 1)) or self.frame_drop == True:
-                self.fit_poly()  # fitting the lane line using sliding window, if the previous detection isn't good
+                self.sliding_window_poly()  # fitting the lane line using sliding window, if the previous detection isn't good
             else:
                 self.search_around_poly()  # fitting the lane line based on the previous frame, if lane lines of last frame are judged been detected
 
@@ -402,7 +422,7 @@ class frame_class(object):  # class, which is to processing every frame
 
 
             if self.frame_drop == True and self.method == 'search_around': # try sliding window if this frame is dropped and the method of lane line fitting is using self.search_around_poly()
-                self.fit_poly()
+                self.sliding_window_poly()
                 self.measure_curvature()
 
             # post-processing
