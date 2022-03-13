@@ -95,23 +95,64 @@ To adjusting the exposure the image will be firstly transformed into gray. Then 
 ![Alt text](./output_images/Adjust_Exposure.png)
 
 ```python
-    def exposure_adj(self, img): # to adjust the exposure of a image. The goal is to adjusting the median of value of its gray image to 128
-        gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
-        gray_count = gray.ravel() # counting the number of each gray value
-        self.gray_count = gray_count
-        self.gray_median = np.median(gray_count) # find the median value of the gray image
-        if np.abs(self.gray_median - 128) > 15:  # adjust the exposure only when the median far away from 128
-            adj_fac = np.min([128/self.gray_median, 1.5])  # the factor for adjusting is limited to 1.5 times
-            img_out = img.astype(np.float32)
-            img_out[img_out < self.gray_median] = img_out[img_out < self.gray_median] * adj_fac # adjusting the portion, which its value smaller than 128
-            img_out[img_out >= self.gray_median] = ((img_out[img_out >= self.gray_median] - self.gray_median) / (255 - self.gray_median) * (1 - adj_fac) + adj_fac) * img_out[img_out >= self.gray_median] # adjusting the portion, which its value bigger than 128
-            img_out = img_out.astype(np.uint8)
-            return img_out
-        else:
-            return img
+class frame_class(object):
+  ...
+  ...    
+      def exposure_adj(self, img): # to adjust the exposure of a image. The goal is to adjusting the median of value of its gray image to 128
+              gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+              gray_count = gray.ravel() # counting the number of each gray value
+              self.gray_count = gray_count
+              self.gray_median = np.median(gray_count) # find the median value of the gray image
+              if np.abs(self.gray_median - 128) > 15:  # adjust the exposure only when the median far away from 128
+                  adj_fac = np.min([128/self.gray_median, 1.5])  # the factor for adjusting is limited to 1.5 times
+                  img_out = img.astype(np.float32)
+                  img_out[img_out < self.gray_median] = img_out[img_out < self.gray_median] * adj_fac # adjusting the portion, which its value smaller than 128
+                  img_out[img_out >= self.gray_median] = ((img_out[img_out >= self.gray_median] - self.gray_median) / (255 - self.gray_median) * (1 - adj_fac) + adj_fac) * img_out[img_out >= self.gray_median] # adjusting the portion, which its value bigger than 128
+                  img_out = img_out.astype(np.uint8)
+                  return img_out
+              else:
+                  return img
+    ...
+    ...
 ```
 
+#### 4.1.2 Adjust contrast
+After getting a image with adjusted exposure, the contrast of this image should be improved, so that the lane line better apart from the ground. In this project the curve function of Photoshop was implemented for fine-tuning the constrast in different areas of the image.
 
+![Alt text](./output_images/Example_Photoshop_Curve.JPG)
+
+ **Example of Photoshop Curve**
+
+Firstly is to consider how to adjust the curve. In this project the curve is used to improve the contrast of highlight zone for detecting white lane lines. As the white lane lines normally have hight value in all three channels, by increasing the slope of curve from 160 can increase the contrast of white lane lines to their surrounding areas. 
+
+![Alt text](./output_images/curve_adjusting_for_white_lane_line.png)
+
+The curve is defined in the **init-method** of frame_class and used as factor in the method **ps_curve_proc** and multiplied to the corresponding pixels.
+
+```python
+class frame_class(object):  # class, which is to processing every frame
+    def __init__(self):
+        ...
+        self.points = np.array([0, 20, 55, 90, 160, 200, 230, 255])
+        self.values = np.array([0, 20, 55, 90, 160, 245, 250, 255])
+        self.cs = CubicSpline(points, values)
+        ...
+    
+    def ps_curve_proc(self, input_img, mode='color'): # realize the function of Photoshop curve. In this project it is used to fine tune the range and the transition of brightness and shallow of the image
+        if mode == 'color':
+          cs = self.cs  # curve for adjusting a color-image
+        elif mode == 'gray':
+          cs = self.cs_gray # curve for adjusting a gray-image
+        else:
+          cs = self.cs
+        output_img = input_img.copy()
+        output_img = cs(output_img)
+        output_img[output_img > 255] = 255
+        output_img = output_img.astype(np.uint8)
+        return output_img
+```
+
+![Alt Text](./output_images/result_curve_adjusting.png)
 
 * After that the bright zone of this image will be selected to avoiding the "black lines" and the lines between dark and bright areas. 
 * As the lane lines are yellow or white, these two colors will be selected using color space transformation and thresholding.
