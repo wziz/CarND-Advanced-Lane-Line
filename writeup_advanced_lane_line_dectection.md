@@ -83,6 +83,13 @@ The source Region on the original image and the destination region on the warped
 
 ![Alt text](./output_images/Perspective_Transformation.png)
 
+After defining the source and destination points, the transform matrix and the invert transform matrix should be computed.
+
+```python
+M = cv2.getPerspectiveTransform(scr, dst)
+Minv = cv2.getPerspectiveTransform(dst, scr)
+```
+
 ## 4. Image Pre-Processing
 
 The image pre-processing is implemented as a method **img_PrePrc( )** of the class **frame_class**. 
@@ -210,10 +217,55 @@ class frame_class(object):
         ...
 ```
 
+### 4.4 Detecting lane line using gradient and applying all conditions together
+ To avoid that some areas, which are in white or yellow but not lane lines, are selected due to the color selection, a gradient threshold has been used together with the yellow and white selection. This, on the other hand, avoids also some areas with high gradient but not yellow or white are selected due gradient thresholding.
 
-* To avoid that some areas, which are in white or yellow but not lane lines, are selected due to the color selection, a gradient threshold has been used together with the yellow and white selection. This, on the other hand, avoids also some areas with high gradient but not yellow or white are selected due gradient thresholding.
-* The threshold image is then warped to the bird-eye view.
-* For finding the lane bases the histogram is used.
+![Alt Text](./output_images/Example_detected_lane_lines.png)
+
+```python
+class frame_class(object):
+    ...
+    def img_PrePrc(self):
+        ...
+        self.sel = (self.rgb_w | self.hsv_s_thresh_y) & self.grd & self.bright_zone_be   # the detected "yellow" and "white" lines are lane lines, only when they are in bright areas while also coresponding margin are detected. the margins are then as detected lane lines for further use.
+        ...
+```
+
+### 4.5 Perspective Transformation
+
+To classify which pixels belong to lane lines and to compute the parameters of the lane line, the image with detected lane lines should be transformed to the bird-eye view. To do this, the computed transform matrix and the OpenCV Function **cv2.warpPerspective**.
+
+![Alt Text](./output_images/detected_lane_lines_in_bird_eye_view.png)
+
+```python
+class frame_class(object):
+  ...
+  def img_PrePrc(self):
+    ...
+    self.warped_compute = cv2.warpPerspective(self.sum_compute, M, img_size, flags=cv2.INTER_LINEAR)
+    ...
+```
+
+### 4.6 Finding the lane lines bases using histogram
+
+For the method sliding_window_poly(), which finds the lane line pixels from beginning, the bases of the lane lines should be firstly be computed. The idea is, using histogram to horizontally count the number of none zero pixels of the bottom half of the image. The peak of the left half should be the left lane line base, the peak on the right should be the right lane line base.
+
+![Alt Text](./output_images/histogram_for_finding_the_lane_line_bases.png)
+
+Furthermore, the found lane line bases can be also used to roughly determine, if the found lane lines are valid. If the lane line base smaller than 2m or bigger than 5m, then it can be as invalid classified. In this project, the frame of invalid found lane lines will be dropped. The last valid frame will be used instead.
+
+```python
+ self.histogram = np.sum(self.warped[self.warped.shape[0] // 2:, :], axis=0)  # computing the histogram
+        midpoint = np.int(self.histogram.shape[0] // 2)
+        self.left_base = np.argmax(self.histogram[:midpoint]) # finding the bases of the left and right lane lines
+        self.right_base = np.argmax(self.histogram[midpoint:]) + midpoint
+        if (self.right_base - self.left_base) * self.xm_per_pix < 2 or (
+                self.right_base - self.left_base) * self.xm_per_pix > 5: # preliminarily consider if the detected lane lines are useful or not
+            self.frame_drop = True  # this frame will be dropped from detecting lane lines
+            # pass
+        else:
+            self.frame_drop = False
+```
 
 
 
