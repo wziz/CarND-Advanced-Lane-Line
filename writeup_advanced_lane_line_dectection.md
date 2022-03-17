@@ -227,6 +227,7 @@ class frame_class(object):
     ...
     def img_PrePrc(self):
         ...
+        self.grd = self.abs_sobel_thresh(self.gray_img, orient='x', thresh=(10,80)) # detecting the margin of lane lines
         self.sel = (self.rgb_w | self.hsv_s_thresh_y) & self.grd & self.bright_zone_be   # the detected "yellow" and "white" lines are lane lines, only when they are in bright areas while also coresponding margin are detected. the margins are then as detected lane lines for further use.
         ...
 ```
@@ -267,9 +268,139 @@ Furthermore, the found lane line bases can be also used to roughly determine, if
             self.frame_drop = False
 ```
 
+## 5. Fit the lane pixels to second order polynom
+
+### 5.1 Finding lane pixels using sliding window
+
+As in the course introduced, in this project the sliding window is used to finding the lane pixels as a basic or fallback method.
+
+```python
+    def find_lane_pixel(self):  # finding lane pixels using sliding window from lane line bases
+        nwindows = 9
+        margin = 80
+        minpix = 100
+
+        window_height = np.int(self.warped_compute.shape[0] // nwindows)
+
+        nonzero = self.warped_compute.nonzero()
+        nonzeroy = nonzero[0]
+        nonzerox = nonzero[1]
+
+        left_loc = self.left_base
+        right_loc = self.right_base
+
+        left_lane_idx = []
+        right_lane_idx = []
+
+        for window in range(nwindows):
+            win_y_low = self.warped_compute.shape[0] - (window + 1) * window_height
+            win_y_high = self.warped_compute.shape[0] - window * window_height
+            win_left_low = left_loc - margin
+            win_left_high = left_loc + margin
+            win_right_low = right_loc - margin
+            win_right_high = right_loc + margin
+
+            # cv2.rectangle(warped_compute, (win_left_low, win_y_low), (win_left_high, win_y_high), (255), 2)
+            # cv2.rectangle(warped_compute, (win_right_low, win_y_low), (win_right_high, win_y_high), (255), 2)
+
+            good_left_idx = ((nonzeroy > win_y_low) & (nonzeroy < win_y_high) & (nonzerox > win_left_low) & (
+                        nonzerox < win_left_high)).nonzero()[0]
+            good_right_idx = ((nonzeroy > win_y_low) & (nonzeroy < win_y_high) & (nonzerox > win_right_low) & (
+                        nonzerox < win_right_high)).nonzero()[0]
+
+            left_lane_idx.append(good_left_idx)
+            right_lane_idx.append(good_right_idx)
+
+            if len(good_left_idx) > minpix:
+                left_loc = np.int(np.mean(nonzerox[good_left_idx]))
+            if len(good_right_idx) > minpix:
+                right_loc = np.int(np.mean(nonzerox[good_right_idx]))
+
+        left_lane_idx = np.concatenate(left_lane_idx)
+        right_lane_idx = np.concatenate(right_lane_idx)
+
+        self.leftx = nonzerox[left_lane_idx]
+        self.lefty = nonzeroy[left_lane_idx]
+        self.rightx = nonzerox[right_lane_idx]
+        self.righty = nonzeroy[right_lane_idx]
+```
+
+After finding the lane pixels, it should be determined, if the found lane line pixels able to be fitted as second order polynom.
+
+```python
+        if self.lefty.shape[0] < 3 or self.righty.shape[0] < 3: # if the detected lane pixel less than three, then drop this frame from detecting lane lines.
+            self.frame_drop = True
+            pass
+```
+
+Then the Numpy-Function **np.polyfit** can be used to fit the found lane line pixels into a second order polynom
+
+````python
+self.left_fit = np.polyfit(self.lefty, self.leftx, 2) # fit the pixels as lane line using second order polynom
+self.right_fit = np.polyfit(self.righty, self.rightx, 2)
+````
+
+In this project, to filtering between two frames, a low pass filter was used. The time constant of the low pass filter depends on the difference of two frames. The bigger the difference, the larger the time constant and so the filtering effect. To varify the lane lines between two frames, the lane lines were normalized using points with fixed vertical position. The difference of these points in horizontal will be filtered. Besides, the normalized lane line can also be used to test the parallelism of left and right lane lines.
+
+```python
+# using the fitted polynom for the normalized lane line with fixed y-position. This will be used for filtering between frames
+self.ploty = np.linspace(0, self.warped_compute.shape[0] - 1, self.warped_compute.shape[0])
+self.left_fitx = self.left_fit[0] * self.ploty ** 2 + self.left_fit[1] * self.ploty + self.left_fit[2]
+self.right_fitx = self.right_fit[0] * self.ploty ** 2 + self.right_fit[1] * self.ploty + self.right_fit[2]
 
 
-d
+if np.abs(np.max((self.right_fitx - self.left_fitx) * self.xm_per_pix) - np.min((self.right_fitx - self.left_fitx) * self.xm_per_pix)) > 4 or (self.right_fitx < self.left_fitx).any():  # judging if the detected lane lines are valid: 1. if the widths between the widest and the narrowest lane lines greater than 4m, then drop this frame. 2. if the detected left lane line on the right of the detected right lane line, then drop this frame.
+  self.frame_drop = True
+  pass
+```
+
+Filter lane lines:
+
+```python
+def lane_line_filter(self):  # filtering the lane lines between frames using normalized lane points
+    tiFil_t = [[10, 20, 50, 100, 120, 200], [0.04, 0.05, 0.08, 0.1, 0.8, 1]]  # tiFil_t[0]: difference between two frames in pixel, tiFil_t[1]: time constant for a low pass filter
+    if (self.counter <= 1) or self.left_fitx_mem == []: # initialize
+        self.left_fitx_mem = self.left_fitx.copy()
+        self.right_fitx_mem = self.right_fitx.copy()
+    else:
+        delta_left = np.abs(self.left_fitx_mem - self.left_fitx)  # compute the difference between two frames of each normalized lane points
+        # delta_left_max = delta_left.max()
+        # tiFil_left = self.getZValueFromTabel(delta_left_max, tiFil_t) # using the biggest difference to get the time constant
+        tiFil_left = self.getZValueFromTabel(delta_left, tiFil_t)  # using the biggest difference to get the time constant
+
+        delta_right = np.abs(self.right_fitx_mem - self.right_fitx)
+        # delta_right_max = delta_right.max()
+        # tiFil_right = self.getZValueFromTabel(delta_right_max, tiFil_t)
+        tiFil_right = self.getZValueFromTabel(delta_right, tiFil_t)
+
+        self.left_fitx_mem = self.left_fitx_mem + 0.02 / tiFil_left * (self.left_fitx - self.left_fitx_mem) # compute the x-position of filtered lane points
+        self.right_fitx_mem = self.right_fitx_mem + 0.02 / tiFil_right * (self.right_fitx - self.right_fitx_mem)
+
+    self.left_fitx = self.left_fitx_mem.copy()
+    self.right_fitx = self.right_fitx_mem.copy()
+```
+
+The function **getZValueFromTabel** is used to read the time constant from a lookup tabel:
+
+```python
+def getZValueFromTabel(self, input_x, tiFil_tabel): # _vectorized
+  i = 0
+  output_ti = np.ones_like(input_x) * tiFil_tabel[1][0]  # all outputs are initiallized with the first value in the tabel
+  while i < len(tiFil_tabel[0]) - 1:
+    output_ti[input_x > tiFil_tabel[0][i]] = tiFil_tabel[1][i + 1]
+    i += 1
+  return output_ti
+```
+
+The filtered "lane points" should be once again be fitted to second order polynom and then again normalized using points with fixed vertical position.
+
+```python
+self.left_fit = np.polyfit(self.ploty, self.left_fitx, 2)  # fitting second order polynom after filtering of the lane line
+self.right_fit = np.polyfit(self.ploty, self.right_fitx, 2)
+self.ploty = np.linspace(0, self.warped_compute.shape[0] - 1, self.warped_compute.shape[0])
+self.left_fitx = self.left_fit[0] * self.ploty ** 2 + self.left_fit[1] * self.ploty + self.left_fit[2]
+self.right_fitx = self.right_fit[0] * self.ploty ** 2 + self.right_fit[1] * self.ploty + self.right_fit[2]
+```
 
 d
 
