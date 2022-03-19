@@ -196,7 +196,7 @@ class frame_class(object):  # class, which is to processing every frame
         self.grd = self.abs_sobel_thresh(self.gray_img, orient='x', thresh=(10,80)) # detecting the margin of lane lines
 
         self.rgb_w = (self.undst_img > [[[190,190,190]]]).all(2) # selecting the white lane lines, for they usually have high values in all three channels
-        self.sel = (self.rgb_w | self.hsv_s_thresh_y) & self.bright_zone_be & self.grd  # the detected "yellow" and "white" lines are lane lines, only when they are in bright areas while also coresponding margin are detected. the margins are then as detected lane lines for further use.
+        self.sel = (self.rgb_w | self.hsv_s_thresh_y) & self.grd & self.bright_zone_be   # the detected "yellow" and "white" lines are lane lines, only when they are in bright areas while also coresponding margin are detected. the margins are then as detected lane lines for further use.
 
         self.sum_blur = cv2.GaussianBlur(255 * np.int8(self.sel), (9, 9), 0)  # denoising on the detected lane lines for finding the lane line bases
         self.sum_compute = 255 * np.int8(self.sel) # for finding the lane line pixels
@@ -205,7 +205,7 @@ class frame_class(object):  # class, which is to processing every frame
         self.warped = cv2.warpPerspective(self.sum_blur, M, img_size, flags=cv2.INTER_LINEAR)  # perspective transform
         self.warped_compute = cv2.warpPerspective(self.sum_compute, M, img_size, flags=cv2.INTER_LINEAR)
         self.warped_compute = cv2.GaussianBlur(self.warped_compute, (15, 15), 0)
-        self.warped_compute[self.warped_compute < 50] = 0  # denoising the detected lane lins
+        self.warped_compute[self.warped_compute < 50] = 0  # denoising the detected lane lines
 
         self.histogram = np.sum(self.warped[self.warped.shape[0] // 2:, :], axis=0)  # computing the histogram
         midpoint = np.int(self.histogram.shape[0] // 2)
@@ -340,7 +340,6 @@ class frame_class(object):  # class, which is to processing every frame
                 self.frame_drop = True
                 pass
             else:
-
                 self.lane_line_filter()  # use this function for smooth detection of lane lines
                 # self.left_fit = np.polyfit(self.lefty, self.leftx, 2)  # fitting second order polynom after filtering of the lane line
                 # self.right_fit = np.polyfit(self.righty, self.rightx, 2)
@@ -451,13 +450,13 @@ class frame_class(object):  # class, which is to processing every frame
                 self.result = cv2.addWeighted(img, 1, color_revert, 0.3, 0)
 
                 if self.save.vehicle_offset < 0: # preparing the text pushed on this frame
-                    offset_side = 'right'
+                    offset_side = 'right of middle'
                 else:
-                    offset_side = 'left'
-                text = 'left_curverad = ' + str(int(self.save.left_curverad)) + ', right_curverad = ' + str(
-                    int(self.save.right_curverad)) + 'frame_drop = ' + str(self.frame_drop)
-                text1 = 'lane_width = ' + str("%.2f" % self.save.lane_width.mean()) + ', frame = ' + str(
-                    self.counter) + ', Offset = ' + offset_side + ' ' + str("%.2f" % np.abs(self.save.vehicle_offset))
+                    offset_side = 'left of middle'
+                text = 'left_curverad = ' + str(int(self.save.left_curverad)) + 'm, right_curverad = ' + str(
+                    int(self.save.right_curverad)) + 'm, frame_drop = ' + str(self.frame_drop)
+                text1 = 'lane_width = ' + str("%.2f" % self.save.lane_width.mean()) + 'm, frame = ' + str(
+                    self.counter) + ', Offset = ' + offset_side + ' ' + str("%.2f" % np.abs(self.save.vehicle_offset) + 'm')
 
                 if self.result[0:200, 0:640, :].mean() < 100: # adapting the text color according to the background
                     color = (255, 255, 255)
@@ -470,21 +469,28 @@ class frame_class(object):  # class, which is to processing every frame
                 return self.result
 
             else: # if this frame isn't dropped.
+
+                # empty layer
                 warped_zero = np.zeros_like(self.warped_compute)
+                color_warped = np.uint8(np.dstack((warped_zero, warped_zero, warped_zero)))
+
+                # middle of vehicle
                 middle_line = np.zeros_like(self.warped_compute)
                 middle_line[:, 638:642] = 255
+
+                # middle of lane
                 middle = np.int16((self.left_fitx + self.right_fitx) / 2)
                 lane_middle_x = np.hstack([middle - 2, middle - 1, middle, middle + 1, middle + 2])
                 lane_middel_y = np.int16(np.tile(self.ploty, (5,)))
                 lane_middle =np.zeros_like(self.warped_compute)
                 lane_middle[lane_middel_y, lane_middle_x] = 255
-                color_warped = np.uint8(np.dstack((warped_zero, warped_zero, warped_zero)))
 
+                # use the normalized and filtered lane lines to plotting the lane area
                 pts_left = np.array([np.transpose(np.vstack([self.left_fitx, self.ploty]))])
                 pts_right = np.array([np.flipud(np.transpose(np.vstack([self.right_fitx, self.ploty])))])
                 pts = np.hstack((pts_left, pts_right))
-
                 cv2.fillPoly(color_warped, np.int_([pts]), (0, 255, 0))
+
                 color_warped[:, :, 0] = middle_line
                 color_warped[:, :, 2] = lane_middle
                 color_revert = cv2.warpPerspective(color_warped, Minv, img_size)
@@ -492,12 +498,13 @@ class frame_class(object):  # class, which is to processing every frame
                 self.result = cv2.addWeighted(img, 1, color_revert, 0.3, 0)
 
                 if self.vehicle_offset < 0:
-                    offset_side = 'right'
+                    offset_side = 'right of middle'
                 else:
-                    offset_side = 'left'
-                text = 'left_curverad = ' + str(int(self.left_curverad)) + ', right_curverad = ' + str(int(self.right_curverad)) + 'frame_drop = ' + str(self.frame_drop)
-                text1 = 'lane_width = ' + str("%.2f" % self.lane_width.mean()) + ', frame = ' + str(self.counter) + ', Offset = ' + offset_side + ' ' + str("%.2f" % np.abs(self.vehicle_offset))
-                if self.result[0:200, 0:640, :].mean() < 100:
+                    offset_side = 'left of middle'
+                text = 'left_curverad = ' + str(int(self.left_curverad)) + 'm, right_curverad = ' + str(int(self.right_curverad)) + 'm, frame_drop = ' + str(self.frame_drop)
+                text1 = 'lane_width = ' + str("%.2f" % self.lane_width.mean()) + 'm, frame = ' + str(self.counter) + ', Offset = ' + offset_side + ' ' + str("%.2f" % np.abs(self.vehicle_offset) + 'm')
+
+                if self.result[0:200, 0:640, :].mean() < 100:  # adapt the color of text to the background
                     color = (255, 255, 255)
                 else:
                     color = (0,0,0)

@@ -401,13 +401,234 @@ self.ploty = np.linspace(0, self.warped_compute.shape[0] - 1, self.warped_comput
 self.left_fitx = self.left_fit[0] * self.ploty ** 2 + self.left_fit[1] * self.ploty + self.left_fit[2]
 self.right_fitx = self.right_fit[0] * self.ploty ** 2 + self.right_fit[1] * self.ploty + self.right_fit[2]
 ```
+### 5.2 finding lane line by searching the surroundings of the lane lines from last valid frame
 
-d
+Once the lane lines of last frame are classified as valid (will be described in chapter 5.3), the detected lane lines can be used for the next frame by searching the nonzero pixels around the old lane lines.
 
-d
+To avoid that lane lines from the last frame are invalid but as valid classified, the method of sliding window is used as a fallback method, when nothing is found by using the search_around_poly()
 
-d
+```python
+def search_around_poly(self): # detecting lane lines based on the found validated lane lines
+    margin = 50
+    nonzero = self.warped_compute.nonzero()
+    nonzeroy = nonzero[0]
+    nonzerox = nonzero[1]
 
-d
+    self.left_region_l = self.draw_poly_eq(self.left_fit, nonzeroy) - margin # left margin of left lane line from last frame
+    self.left_region_r = self.draw_poly_eq(self.left_fit, nonzeroy) + margin
+    self.right_region_l = self.draw_poly_eq(self.right_fit, nonzeroy) - margin
+    self.right_region_r = self.draw_poly_eq(self.right_fit, nonzeroy) + margin
 
-d
+    left_lane_idx = ((nonzerox > self.left_region_l) & (nonzerox < self.left_region_r)).nonzero()[0]  # pixel index that in the left lane line region
+    right_lane_idx = ((nonzerox > self.right_region_l) & (nonzerox < self.right_region_r)).nonzero()[0]
+
+    if (left_lane_idx is None) or (right_lane_idx is None):  # if nothing found
+        self.sliding_window_poly()  # then back to the method, that search the lane line from lane base
+    else:
+        self.frame_drop = False
+        self.leftx = nonzerox[left_lane_idx]
+        self.lefty = nonzeroy[left_lane_idx]
+        self.rightx = nonzerox[right_lane_idx]
+        self.righty = nonzeroy[right_lane_idx]
+
+        self.left_fit = np.polyfit(self.lefty, self.leftx, 2)  # fit the pixels as lane line using second order polynom
+        self.right_fit = np.polyfit(self.righty, self.rightx, 2)
+
+        # using the fitted polynom for the normalized lane line with fixed y-position. This will be used for filtering between frames
+        self.ploty = np.linspace(0, self.warped_compute.shape[0]-1, self.warped_compute.shape[0])
+        self.left_fitx = self.left_fit[0] * self.ploty ** 2 + self.left_fit[1] * self.ploty + self.left_fit[2]
+        self.right_fitx = self.right_fit[0] * self.ploty ** 2 + self.right_fit[1] * self.ploty + self.right_fit[2]
+
+        if np.abs(np.max((self.right_fitx - self.left_fitx) * self.xm_per_pix) - np.min((self.right_fitx - self.left_fitx) * self.xm_per_pix)) > 4 or (self.right_fitx < self.left_fitx).any(): # judging if the detected lane lines are valid: 1. if the widths between the widest and the narrowest lane lines greater than 4m, then drop this frame. 2. if the detected left lane line on the right of the detected right lane line, then drop this frame.
+            self.frame_drop = True
+            pass
+        else:
+            self.lane_line_filter()  # use this function for smooth detection of lane lines
+            # self.left_fit = np.polyfit(self.lefty, self.leftx, 2)  # fitting second order polynom after filtering of the lane line
+            # self.right_fit = np.polyfit(self.righty, self.rightx, 2)
+            self.left_fit = np.polyfit(self.ploty, self.left_fitx, 2)  # fitting second order polynom after filtering of the lane line
+            self.right_fit = np.polyfit(self.ploty, self.right_fitx, 2)
+            self.ploty = np.linspace(0, self.warped_compute.shape[0] - 1, self.warped_compute.shape[0])
+            self.left_fitx = self.left_fit[0] * self.ploty ** 2 + self.left_fit[1] * self.ploty + self.left_fit[2]
+            self.right_fitx = self.right_fit[0] * self.ploty ** 2 + self.right_fit[1] * self.ploty + self.right_fit[2]
+            # for debug
+            self.output_img = np.dstack((self.warped_compute, self.warped_compute, self.warped_compute))
+            self.output_img[self.lefty, self.leftx] = [255, 255, 0]
+            self.output_img[self.righty, self.rightx] = [255, 255, 0]
+            self.method = 'search_around'# flag for further using
+```
+
+As mentioned this method is also used as the fallback:
+
+```python
+if self.frame_drop == True and self.method == 'search_around': # try sliding window if this frame is dropped and the method of lane line fitting is using self.search_around_poly()
+    self.sliding_window_poly()
+    self.measure_curvature()
+```
+
+### 5.3 Selecting the detecting method of lane lines
+
+As described in the chapters 5.1 and 5.2, the lane lines can be found by using two methods. The search_around_poly uses the detected lane lines as basis and is faster. But it depends on that the lane lines of last frame are correctly detected. Now it should be considered, in which situations the search_around_poly can be used.
+
+Firstly the polynom factors must exist. Secondly the last frame shouldn't be dropped. Thirdly the lane width, on one side should have almost the same value in different vertical positions (criterion is the variance of the lane width in different vertical positions). On the other side, the lane width shouldn't change greatly compared with the past frames. This is realized by computing the mean value of lane width in the past frames.
+
+```python
+if self.counter <= 1:
+    self.lane_width_mean = self.lane_width.mean()
+else:
+    if (np.abs(self.lane_width_mean - self.lane_width.mean()) > 1) or (np.var(self.lane_width) > 1) or self.frame_drop == True:
+        self.frame_drop = True
+    else:
+        self.frame_drop = False
+    self.lane_width_mean = (self.lane_width_mean * (self.counter - 1) + self.lane_width.mean()) / self.counter
+```
+
+Put all conditions together:
+
+```python
+if ((self.left_fit is None) and (self.right_fit is None)) or (self.counter == 1 or (np.var(self.lane_width) > 1)) or self.frame_drop == True:
+    self.sliding_window_poly()  # fitting the lane line using sliding window, if the previous detection isn't good
+else:
+    self.search_around_poly()  # fitting the lane line based on the previous frame, if lane lines of last frame are judged been detected
+```
+
+The following image shows the result of the detected lane pixels and the fitted polynomials as lane lines.
+![Alt Text](./output_images/detected_lane_pixel_and_Lane_lines.png)
+
+
+## 6 Compute the lane radius, lane width and the offset to lane middle
+
+These functions were defined in the method **measure_curvature()**
+
+In this project to compute the parameters of the lane lines (radius, lane width) and the relative position of the vehicle to the lane middle, three vertical positions were firstly defined - top, middle and bottom - for evaluating the parameters of the lane lines.
+
+```python
+y_eval = np.array([np.max(self.ploty), np.int(np.max(self.ploty) / 2), 0]) # three y-positions: top, middle and bottom
+```
+
+To computing all these it should be firstly computed the transformation factor between pixel and meter. These transformation factors were computed by using the parameters of lane lines in the real world: length of one lane line is 3m, width of left and right lane lines is 3.7m.
+
+```python
+self.ym_per_pix = 3 / (678 - 583 + 1)
+self.xm_per_pix = 3.7 / (944 - 363 + 1)
+```
+
+To computing the radius of the lane lines, the formal introduced in the course was used.
+
+```python
+left_curverad = ((1 + (2 * self.xm_per_pix / self.ym_per_pix ** 2 * self.left_fit[0] * y_eval + self.left_fit[1] * self.xm_per_pix / self.ym_per_pix) ** 2) ** 1.5) / np.absolute(2 * self.left_fit[0] * self.xm_per_pix / self.ym_per_pix ** 2)
+right_curverad = ((1 + (2 * self.xm_per_pix / self.ym_per_pix ** 2 * self.right_fit[0] * y_eval + self.right_fit[1] * self.xm_per_pix / self.ym_per_pix) ** 2) ** 1.5) / np.absolute(2 * self.right_fit[0] * self.xm_per_pix / self.ym_per_pix ** 2)
+```
+
+In these project the lane width of one frame is also computed in top, middle and bottom of the detected lane lines. As mentioned, these were used as criterion to judge if the detected lane lines are valid.
+
+```python
+left_base_point = self.left_fit[0] * y_eval ** 2 + self.left_fit[1] * y_eval + self.left_fit[2]  # for computing the lane width of the top, middle and bottom of the lane area
+right_base_point = self.right_fit[0] * y_eval ** 2 + self.right_fit[1] * y_eval + self.right_fit[2]
+lane_width = (right_base_point - left_base_point) * self.xm_per_pix
+```
+
+The offset of the vehicle to the lane middle was computed by using the lane position of the bottom as follows:
+
+```python
+offset = ((right_base_point[0] + left_base_point[0]) / 2 - 640) * self.xm_per_pix  # offset of lane middle to vehicle middle
+```
+
+The Text in the following image shows the result of these function. Besides the yellow straight line shows the longitudinal direction of the vehicle and the light blue curve shows the middle of the lane. Also, this is the result of the post-processing, which will be described in the next chapter.
+
+![Alt Text](./output_images/Lane_Line_Parameters.png)
+
+
+## 7. Post-Processing
+
+For the part of post-processing, the idea is to plot the original image and the detected lane line area in two layers and stack them together.
+
+Firstly is to prepare the empty image.
+
+```python
+# empty layer
+warped_zero = np.zeros_like(self.warped_compute)
+color_warped = np.uint8(np.dstack((warped_zero, warped_zero, warped_zero)))
+```
+
+Then is to prepare the mentioned vehicle middle line and the lane middle line:
+
+```python
+# middle of vehicle
+middle_line = np.zeros_like(self.warped_compute)
+middle_line[:, 638:642] = 255
+
+# middle of lane
+middle = np.int16((self.left_fitx + self.right_fitx) / 2)
+lane_middle_x = np.hstack([middle - 2, middle - 1, middle, middle + 1, middle + 2])
+lane_middel_y = np.int16(np.tile(self.ploty, (5,)))
+lane_middle =np.zeros_like(self.warped_compute)
+lane_middle[lane_middel_y, lane_middle_x] = 255
+```
+
+Then the normalized and filtered lane lines will be used to plot the lane area:
+
+```python
+# use the normalized and filtered lane lines to plotting the lane area
+pts_left = np.array([np.transpose(np.vstack([self.left_fitx, self.ploty]))])
+pts_right = np.array([np.flipud(np.transpose(np.vstack([self.right_fitx, self.ploty])))])
+pts = np.hstack((pts_left, pts_right))
+cv2.fillPoly(color_warped, np.int_([pts]), (0, 255, 0))
+```
+
+For this layer, the lane middle and the vehicle middle will also be added:
+
+```python
+color_warped[:, :, 0] = middle_line
+color_warped[:, :, 2] = lane_middle
+```
+
+Last step of this layer is to transform the perspective back to the normal view:
+
+```python
+color_revert = cv2.warpPerspective(color_warped, Minv, img_size)
+```
+
+Then layer of original image and the layer with lane area will be added together:
+
+```python
+self.result = cv2.addWeighted(img, 1, color_revert, 0.3, 0)
+```
+
+The last step is to plot the lane information on the result:
+
+```python
+if self.vehicle_offset < 0:
+    offset_side = 'right of middle'
+else:
+    offset_side = 'left of middle'
+text = 'left_curverad = ' + str(int(self.left_curverad)) + 'm, right_curverad = ' + str(int(self.right_curverad)) + 'm, frame_drop = ' + str(self.frame_drop)
+text1 = 'lane_width = ' + str("%.2f" % self.lane_width.mean()) + 'm, frame = ' + str(self.counter) + ', Offset = ' + offset_side + ' ' + str("%.2f" % np.abs(self.vehicle_offset) + 'm')
+
+if self.result[0:200, 0:640, :].mean() < 100:  # adapt the color of text to the background
+    color = (255, 255, 255)
+else:
+    color = (0,0,0)
+cv2.putText(self.result, text, (100, 50), fontFace=cv2.FONT_HERSHEY_COMPLEX, fontScale=0.8, color = color)
+cv2.putText(self.result, text1, (100, 100), fontFace=cv2.FONT_HERSHEY_COMPLEX, fontScale=0.8, color=color)
+```
+
+## Discussion
+
+In this project I have achieved to finish the "project_video" and the "challenge_video".
+
+For the project_video, the methods introduced in the course are enough to get a good result. But not perfect. For example, the color of ground of some sections of the highway in the "project_video" are a little gray or yellow. The contrast of these frames are low, and so the lane line can not be completely detected. But with the filter, the lane line detection shows still an acceptable result.
+
+For the challenge_video, these methods worked not well. Firstly, there is a black line in the middle of the lane. Secondly, the line between dark and bright zone is hard to isolate by only using the gradient methods. Thirdly and also the hardest, due to the bridge over the highway, the camera didn't give a video with stable exposure and so the contrast. 
+
+On these grounds, I used the technics which I learned from photography to adjust the image to get a desired exposure and contrast (first time without Photoshop). Besides, I used meanly the color selection to roughly find the lane lines and used the gradient methods with logical and to validate that these are real lines, not nonsense color blocks.
+
+I tried then on the harder_challenge_video, but failed. The reasons I deduced are as follows:
+
+* the change of dark and bright is more often and larger
+* some frames are totally over exposure and lost the useful information
+* the curves have smaller radius
+
+To handle these problems I think the best way is to develop a better algorithm to adjust the image. For example, firstly evaluate the problem of the frame and then adjust the image correspondingly. Besides, I think the clustering algorithms can also be used to filtering the pixels, which are detected as lane pixels due to the color selection or gradient selection methods.
+
+I decided not to improve my code to finish the harder_challenge_video because the coming course contents fascinate me, and I'm eager to learn more from those.
